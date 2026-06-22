@@ -1,16 +1,17 @@
 """
 policy_to_csv.py — 학습된 BC 정책을 sim에서 롤아웃해 '왼손 궤적'을 ik_traj.py용 CSV로 저장.
+이번 버전: 차렷(초기자세)에서 출발 → pick&place → 차렷 복귀 하도록 리드인/리드아웃 추가.
 
 CSV 형식 (ik_traj.py가 읽는 그대로):
-  [timestamp, LH_x,LH_y,LH_z, LH_R,LH_P,LH_Y, RH_x,RH_y,RH_z, RH_R,RH_P,RH_Y]
-  - RPY는 라디안 (ik_traj.py가 R.from_euler('xyz', ...) 라디안으로 읽음)
-  - 오른손은 시작 자세로 고정, 왼손만 정책 궤적을 따름
+  [timestamp, LH_x,LH_y,LH_z, LH_R,LH_P,LH_Y, RH_x,RH_y,RH_z, RH_R,RH_P,RH_Y]   (RPY 라디안)
+  - 오른손은 시작 자세로 고정, 왼손만 궤적을 따름.
 *** 이 스크립트 자체는 순수 시뮬레이션. 실물 명령 없음. ***
 
 실행:
-    python3 policy_to_csv.py                       # 기본 블록/타겟으로 arm_traj.csv 생성
-    python3 policy_to_csv.py --bx 0.42 --by 0.20 --tx 0.42 --ty 0.08
-    python3 policy_to_csv.py --view                # 뽑으면서 sim으로 확인
+    python3 policy_to_csv.py --repeat 8           # 차렷→pick&place→차렷, 느린 CSV 저장
+    python3 policy_to_csv.py --view --slowmo 8    # 천천히 미리보기 (차렷부터 전체)
+    python3 policy_to_csv.py --no-return          # 복귀(리드아웃) 빼기
+    --bx --by --tx --ty --size 로 블록/타겟 변경
 """
 
 import csv
@@ -22,7 +23,7 @@ import torch.nn as nn
 import mujoco
 import mujoco.viewer
 import mink
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as R, Slerp
 from loop_rate_limiters import RateLimiter
 
 import logging
@@ -30,6 +31,8 @@ logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 
 XML = "/home/computer/mink/examples/unitree_g1/scene_g1_pickplace.xml"
 BLOCK_QADR = 50
+LEFT_ARM_QADR = 22          # 왼팔 7관절 qpos 시작 (22~28): 차렷 = 전부 0
+RIGHT_ARM_QADR = 36         # 오른팔 7관절 qpos 시작 (36~42): 차렷 = 전부 0
 APPROACH_H = 0.12
 GRASP_OFF = 0.02
 TABLE_TOP_Z = 0.835
@@ -43,7 +46,27 @@ GRASP_GATE = 0.08
 def above(p): return p + np.array([0, 0, APPROACH_H])
 def on(p):    return p + np.array([0, 0, GRASP_OFF])
 def quat_wxyz(m): q = R.from_matrix(m).as_quat(); return np.array([q[3], q[0], q[1], q[2]])
-def wxyz_to_rpy(q): return R.from_quat([q[1], q[2], q[3], q[0]]).as_euler('xyz')  # radians
+def rpy_to_wxyz(rpy): q = R.from_euler('xyz', rpy).as_quat(); return np.array([q[3], q[0], q[1], q[2]])
+def wxyz_to_rpy(q): return R.from_quat([q[1], q[2], q[3], q[0]]).as_euler('xyz')
+
+
+def resample(frames, max_step):
+    """연속 점 간격이 max_step(m)을 넘으면 중간 점을 보간해 넣음 (위치 lerp + 방향 slerp)."""
+    out = [frames[0]]
+    for (p0, r0), (p1, r1) in zip(frames[:-1], frames[1:]):
+        p0 = np.asarray(p0); p1 = np.asarray(p1)
+        d = np.linalg.norm(p1 - p0)
+        n = max(1, int(np.ceil(d / max_step)))
+        if np.allclose(r0, r1):
+            for k in range(1, n + 1):
+                a = k / n
+                out.append(((1 - a) * p0 + a * p1, np.asarray(r0)))
+        else:
+            sl = Slerp([0, 1], R.concatenate([R.from_euler('xyz', r0), R.from_euler('xyz', r1)]))
+            for k in range(1, n + 1):
+                a = k / n
+                out.append(((1 - a) * p0 + a * p1, sl(a).as_euler('xyz')))
+    return out
 
 
 class ResBlock(nn.Module):
@@ -103,8 +126,12 @@ def main():
     ap.add_argument("--ty", type=float, default=0.08)
     ap.add_argument("--size", type=float, default=0.025)
     ap.add_argument("--out", type=str, default="arm_traj.csv")
-    ap.add_argument("--repeat", type=int, default=2, help="각 점을 N번 반복 = 실물 재생속도 늦춤(안전)")
-    ap.add_argument("--slowmo", type=float, default=5.0, help="뷰어 보기 속도만 늦춤(저장 CSV엔 영향 없음). 클수록 느림")
+    ap.add_argument("--repeat", type=int, default=2, help="각 점 N번 반복 = 실물 재생속도 늦춤(안전)")
+    ap.add_argument("--slowmo", type=float, default=5.0, help="뷰어 보기속도만 늦춤(CSV 무관)")
+    ap.add_argument("--maxstep", type=float, default=0.005, help="점 사이 최대 간격(m). 작을수록 더 촘촘/부드러움")
+    ap.add_argument("--leadin", type=int, default=100, help="차렷→시작점 보간 프레임 수")
+    ap.add_argument("--leadout", type=int, default=100, help="끝점→차렷 복귀 보간 프레임 수")
+    ap.add_argument("--no-return", action="store_true", help="차렷 복귀(리드아웃) 생략")
     ap.add_argument("--view", action="store_true")
     args = ap.parse_args()
 
@@ -128,7 +155,7 @@ def main():
     tasks, limits, hand_tasks, hands_mid = build_mink(model, configuration, data)
     L = 1
     left_quat = data.mocap_quat[hands_mid[L]].copy()
-    left_rpy = wxyz_to_rpy(left_quat)
+    left_rpy = wxyz_to_rpy(left_quat)              # grasp(준비) 자세 손목 방향
 
     block_bid = model.body("block").id
     palm_sid = model.site("left_palm").id
@@ -138,23 +165,33 @@ def main():
     data.mocap_pos[target_mid] = target_pos
     mujoco.mj_forward(model, data)
 
-    # 오른손 고정 자세 (시작 시점 그대로)
-    rh_pos = data.site_xpos[rpalm_sid].copy()
-    rh_rpy = R.from_matrix(data.site_xmat[rpalm_sid].reshape(3, 3)).as_euler('xyz')
+    # --- 차렷(초기자세): 양팔 관절을 0으로 둔 FK (오른팔도 안 들도록) ---
+    home = mujoco.MjData(model)
+    home.qpos[:] = q0
+    home.qpos[LEFT_ARM_QADR:LEFT_ARM_QADR + 7] = 0.0
+    home.qpos[RIGHT_ARM_QADR:RIGHT_ARM_QADR + 7] = 0.0
+    mujoco.mj_forward(model, home)
+    start_pos = home.site_xpos[palm_sid].copy()
+    start_rot = R.from_matrix(home.site_xmat[palm_sid].reshape(3, 3))
+    grasp_rot = R.from_euler('xyz', left_rpy)
+
+    # 오른손은 차렷 자세로 고정 (들리지 않게) — CSV·IK 목표 모두 여기로
+    rh_pos = home.site_xpos[rpalm_sid].copy()
+    rh_rpy = R.from_matrix(home.site_xmat[rpalm_sid].reshape(3, 3)).as_euler('xyz')
+    data.mocap_pos[hands_mid[0]] = rh_pos
+    data.mocap_quat[hands_mid[0]] = rpy_to_wxyz(rh_rpy)
+    hand_tasks[0].set_target(mink.SE3.from_mocap_id(data, hands_mid[0]))
 
     goals = [above(binit), on(binit), on(binit), above(binit),
              above(target_pos), on(target_pos), on(target_pos), above(target_pos)]
     om, osd = stats["obs_mean"], stats["obs_std"]
     am, asd = stats["act_mean"], stats["act_std"]
-
     rate = RateLimiter(frequency=100.0)
-    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) if args.view else None
 
-    traj = [data.site_xpos[palm_sid].copy()]   # 시작점 = 현재 휴식 자세 (실물 시작 점프 방지)
+    # ---------- 1) 정책 롤아웃 (헤드리스, traj 생성) ----------
+    traj = [data.site_xpos[palm_sid].copy()]
     wp_idx = 0; dwell = 0; grasped = False; final_dwell = 0
     for _ in range(MAX_STEPS):
-        if args.view and not viewer.is_running():
-            break
         palm = data.site_xpos[palm_sid].copy()
         bpos = data.xpos[block_bid].copy()
         obs = np.concatenate([palm, bpos, target_pos, binit, [args.size]]).astype(np.float32)
@@ -193,13 +230,46 @@ def main():
                 if final_dwell >= DWELL_MIN:
                     break
 
-        if args.view:
-            viewer.sync(); time.sleep(args.slowmo / 100.0)
+    # ---------- 2) 전체 프레임 구성: 리드인 + 메인 + 리드아웃 ----------
+    frames = []  # (pos, rpy)
 
-    if viewer is not None:
+    # 리드인: 차렷 → traj[0]  (위치 보간 + 손목 방향 slerp)
+    slerp_in = Slerp([0, 1], R.concatenate([start_rot, grasp_rot]))
+    for i in range(args.leadin):
+        a = (i + 1) / args.leadin
+        frames.append(((1 - a) * start_pos + a * traj[0], slerp_in(a).as_euler('xyz')))
+
+    # 메인: pick & place (손목 방향 고정)
+    for p in traj:
+        frames.append((p, left_rpy))
+
+    # 리드아웃: traj[-1] → 차렷
+    if not args.no_return:
+        slerp_out = Slerp([0, 1], R.concatenate([grasp_rot, start_rot]))
+        for i in range(args.leadout):
+            a = (i + 1) / args.leadout
+            frames.append(((1 - a) * traj[-1] + a * start_pos, slerp_out(a).as_euler('xyz')))
+
+    # 전체를 일정 간격으로 촘촘하게 보간 (pick→place 구간 순간이동 방지)
+    frames = resample(frames, args.maxstep)
+
+    # ---------- 3) (선택) 뷰어로 차렷부터 전체 미리보기 ----------
+    if args.view:
+        configuration.update(home.qpos.copy())   # 차렷에서 시작
+        viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+        for pos, rpy in frames:
+            if not viewer.is_running():
+                break
+            data.mocap_pos[hands_mid[L]] = pos
+            data.mocap_quat[hands_mid[L]] = rpy_to_wxyz(rpy)
+            hand_tasks[L].set_target(mink.SE3.from_mocap_id(data, hands_mid[L]))
+            vel = mink.solve_ik(configuration, tasks, rate.dt, "daqp", limits=limits)
+            configuration.integrate_inplace(vel, rate.dt)
+            viewer.sync()
+            time.sleep(args.slowmo / 100.0)
         viewer.close()
 
-    # CSV 작성 (ik_traj.py 형식). repeat로 점을 늘려 실물 재생속도 늦춤.
+    # ---------- 4) CSV 저장 ----------
     header = ['timestamp',
               'LH_x', 'LH_y', 'LH_z', 'LH_R', 'LH_P', 'LH_Y',
               'RH_x', 'RH_y', 'RH_z', 'RH_R', 'RH_P', 'RH_Y']
@@ -208,15 +278,16 @@ def main():
         w = csv.writer(f)
         w.writerow(header)
         t = 0.0
-        for p in traj:
+        for pos, rpy in frames:
             for _ in range(max(1, args.repeat)):
                 w.writerow([t,
-                            p[0], p[1], p[2], left_rpy[0], left_rpy[1], left_rpy[2],
+                            pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2],
                             rh_pos[0], rh_pos[1], rh_pos[2], rh_rpy[0], rh_rpy[1], rh_rpy[2]])
                 t += dt
-    n_rows = len(traj) * max(1, args.repeat)
+    n_rows = len(frames) * max(1, args.repeat)
     print(f"[V] 저장: {args.out}  ({n_rows} 프레임, 약 {n_rows/200:.1f}초 재생)")
-    print(f"    왼손 시작 {np.round(traj[0],3)}  →  끝 {np.round(traj[-1],3)}")
+    print(f"    차렷 시작 {np.round(start_pos,3)}  →  pick&place  →  복귀 {np.round(start_pos,3) if not args.no_return else '(없음)'}")
+    print(f"    리드인 {args.leadin} + 메인 {len(traj)} + 리드아웃 {0 if args.no_return else args.leadout} 프레임")
 
 
 if __name__ == "__main__":
