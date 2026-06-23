@@ -404,10 +404,17 @@ if __name__ == "__main__":
             viewer.sync()
             rate.sleep()
 
-        print("[V] 궤적 재생이 완료되었습니다. 최종 자세를 유지합니다.")
+        # -------------------------------------------------------------
+        # ✅ 종료: 차렷 자세에서 2초 안정 후 자동 정지
+        # -------------------------------------------------------------
+        print("[V] 궤적 재생 완료. 차렷 자세에서 2초 안정 후 자동 종료합니다.")
         try:
-            while viewer.is_running():
+            hold = int(2.0 / rate.dt)          # 2초간 마지막(차렷) 자세 유지 (원하면 2.0을 조절)
+            for _ in range(hold):
+                if not viewer.is_running():
+                    break
                 send_robot_command(pub, low_cmd, crc, cmd_joints, CONTROL_MODE, weight=1.0)
+                viewer.sync()
                 rate.sleep()
         except KeyboardInterrupt:
             print("\n[!] 사용자 종료 명령 감지.")
