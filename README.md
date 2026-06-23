@@ -1,6 +1,7 @@
 # G1 Behavior Cloning — Left-Arm Pick & Place
 
 Unitree G1 휴머노이드용 **행동 복제(Behavior Cloning, BC)** 파이프라인.
+로봇팔이 임의 위치의 박스를 집어 고정된 목표 지점에 놓도록 Behavioral Cloning(BC)으로 학습하고, MuJoCo 시뮬레이션에서 검증한 뒤 실로봇으로 배포하는 프로젝트다.
 **왼팔 기반 pick-and-place**를 시뮬레이션에서 학습하고, 학습된 정책의 손 궤적을 실물 로봇 팔 동작으로 재현한다.
 비전 없이 **상태(state) 기반** 관측을 사용하고, 전신 역기구학(IK)은 [`mink`](https://github.com/kevinzakka/mink)로 푼다.
 
