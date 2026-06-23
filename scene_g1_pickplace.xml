@@ -1,0 +1,74 @@
+<mujoco model="g1 pick-and-place">
+  <include file="g1_with_hands.xml"/>
+
+  <statistic center="0.3 0 .8" extent="1" meansize="0.08"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
+    <global azimuth="180" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".2 .3 .4" rgb2=".1 0.15 0.2"
+      width="512" height="512" mark="cross" markrgb=".8 .8 .8"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true"/>
+    <texture type="2d" name="wood" file="assets/wood.png"/>
+    <material name="wood" texture="wood"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" directional="true"/>
+
+    <!-- 물리용 바닥 (원래 scene_table.xml엔 없었음) -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="grid"/>
+
+    <!-- 테이블: 윗면 z=0.835 (실물 83.5cm에 맞춤). 윗면 = pos_z + size_z = 0.4175+0.4175 -->
+    <geom name="table" type="box" size="0.35 0.4 0.4175" mass="1" material="wood" pos="0.6 0 0.4175"/>
+
+    <!-- 집을 블록 (자유관절). 컴파일 후 qpos 50~56, qvel 49~54 -->
+    <body name="block" pos="0.45 0.15 0.86">
+      <freejoint name="block_free"/>
+      <geom name="block_geom" type="box" size="0.025 0.025 0.025"
+        rgba="0.85 0.2 0.2 1" mass="0.05" friction="1 0.05 0.001"/>
+    </body>
+
+    <!-- 놓을 목표 위치 마커 (mocap, 런타임 이동 가능 / 충돌 없음) -->
+    <body name="target_marker" pos="0.55 -0.05 0.836" mocap="true">
+      <site name="target_site" type="cylinder" size="0.04 0.001" rgba="0.2 0.8 0.2 0.6"/>
+    </body>
+
+    <!-- ↓↓↓ mink IK 타겟 마커들 (기존 scene_table.xml과 동일하게 유지) ↓↓↓ -->
+    <body name="com_target" pos="0.5 0 .5" mocap="true">
+      <geom type="sphere" size=".06" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+      <site type="sphere" size="0.01" rgba="0 0 1 1" group="1"/>
+    </body>
+    <body name="left_palm_target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true">
+      <geom type="box" size=".04 .04 .04" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+      <site type="sphere" size="0.01" rgba="0 0 1 1" group="1"/>
+    </body>
+    <body name="right_palm_target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true">
+      <geom type="box" size=".04 .04 .04" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+      <site type="sphere" size="0.01" rgba="0 0 1 1" group="1"/>
+    </body>
+    <body name="left_foot_target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true">
+      <geom type="box" size=".04 .04 .04" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+      <site type="sphere" size="0.01" rgba="0 0 1 1" group="1"/>
+    </body>
+    <body name="right_foot_target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true">
+      <geom type="box" size=".04 .04 .04" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+      <site type="sphere" size="0.01" rgba="0 0 1 1" group="1"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <!-- 기존 teleop 50차원 + 블록 초기 7차원(pos 0.45 0.15 0.86, quat 1 0 0 0) = 57 -->
+    <key name='teleop' qpos='-0.0951511 -0.0220293 0.732971 1 0 2.78873e-20 0 -0.312 0 0 0.669 -0.363 0 -0.312 0 0 0.669 -0.363 0 0 0 0.468 -0.09432 0.5048 -0.36652 0.602025 0 0 0 0 1.05 0 0 0 0 0 -1.41889 -0.3512 0.02618 1.28 0 0 0 0 -1.05 0 0 0 0 0 0.45 0.15 0.86 1 0 0 0'/>
+  </keyframe>
+
+  <sensor>
+    <fromto geom1="left_hand_collision" geom2="table" cutoff="1"/>
+    <fromto geom1="right_hand_collision" geom2="table" cutoff="1"/>
+    <fromto geom1="left_hand_collision" geom2="left_thigh" cutoff="1"/>
+    <fromto geom1="right_hand_collision" geom2="right_thigh" cutoff="1"/>
+  </sensor>
+</mujoco>
