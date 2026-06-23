@@ -10,7 +10,7 @@ Unitree **G1-EDU** 휴머노이드가 **임의 위치의 박스를 집어 임의
 g1_collect_demos.py   →   train_bc.py   →   eval_bc.py   →   policy_to_csv.py   →   ik_traj_grip.py
  (전문가 데이터)          (BC 학습)        (시뮬 평가)       (궤적 CSV 추출)        (실로봇 배포: 팔+손)
        │                    │                 │                  │                      │
-       └──── mink 전신 IK / scene_g1_pickplace.xml / bc_policy.pt+bc_stats.npz 공유 ─────┘
+       └──── mink 전신 IK / scene_g1_pickplace.xml / bc_policy.pt+bc_stats.npz 공유 ────┘
 ```
 
 BC의 기본 레시피(① 전문가 데이터 수집 → ② 지도학습 → ③ 일반화 평가 → ④ 배포)를 그대로 파일로 나눈 구조로, 각 단계를 독립적으로 검증·교체할 수 있다. G1은 정책 출력을 **CSV로 추출**한 뒤 실로봇 재생기(`ik_traj_grip.py`)가 전신 IK로 균형을 잡으며 재생하는 점이 특징이다.
