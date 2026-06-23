@@ -29,7 +29,7 @@ from loop_rate_limiters import RateLimiter
 import logging
 logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 
-XML = r"C:\Users\USER\g1bc\mink-main\examples\unitree_g1\scene_g1_pickplace.xml"
+XML = r"/home/computer/mink/examples/unitree_g1/scene_g1_pickplace.xml"
 BLOCK_QADR = 50
 LEFT_ARM_QADR = 22          # 왼팔 7관절 qpos 시작 (22~28): 차렷 = 전부 0
 RIGHT_ARM_QADR = 36         # 오른팔 7관절 qpos 시작 (36~42): 차렷 = 전부 0
