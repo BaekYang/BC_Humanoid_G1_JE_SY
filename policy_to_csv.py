@@ -29,7 +29,7 @@ from loop_rate_limiters import RateLimiter
 import logging
 logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 
-XML = "/home/computer/mink/examples/unitree_g1/scene_g1_pickplace.xml"
+XML = r"C:\Users\USER\g1bc\mink-main\examples\unitree_g1\scene_g1_pickplace.xml"
 BLOCK_QADR = 50
 LEFT_ARM_QADR = 22          # 왼팔 7관절 qpos 시작 (22~28): 차렷 = 전부 0
 RIGHT_ARM_QADR = 36         # 오른팔 7관절 qpos 시작 (36~42): 차렷 = 전부 0
@@ -51,21 +51,24 @@ def wxyz_to_rpy(q): return R.from_quat([q[1], q[2], q[3], q[0]]).as_euler('xyz')
 
 
 def resample(frames, max_step):
-    """연속 점 간격이 max_step(m)을 넘으면 중간 점을 보간해 넣음 (위치 lerp + 방향 slerp)."""
+    """연속 점 간격이 max_step(m)을 넘으면 중간 점을 보간해 넣음 (위치 lerp + 방향 slerp).
+    grasp는 보간하지 않고 계단식: 중간 점은 시작 프레임 값(g0)을 유지, 도착 프레임에서 g1로 전환."""
     out = [frames[0]]
-    for (p0, r0), (p1, r1) in zip(frames[:-1], frames[1:]):
+    for (p0, r0, g0), (p1, r1, g1) in zip(frames[:-1], frames[1:]):
         p0 = np.asarray(p0); p1 = np.asarray(p1)
         d = np.linalg.norm(p1 - p0)
         n = max(1, int(np.ceil(d / max_step)))
         if np.allclose(r0, r1):
             for k in range(1, n + 1):
                 a = k / n
-                out.append(((1 - a) * p0 + a * p1, np.asarray(r0)))
+                g = g1 if k == n else g0          # 도착 프레임에서만 g1
+                out.append(((1 - a) * p0 + a * p1, np.asarray(r0), g))
         else:
             sl = Slerp([0, 1], R.concatenate([R.from_euler('xyz', r0), R.from_euler('xyz', r1)]))
             for k in range(1, n + 1):
                 a = k / n
-                out.append(((1 - a) * p0 + a * p1, sl(a).as_euler('xyz')))
+                g = g1 if k == n else g0
+                out.append(((1 - a) * p0 + a * p1, sl(a).as_euler('xyz'), g))
     return out
 
 
@@ -129,9 +132,16 @@ def main():
     ap.add_argument("--repeat", type=int, default=2, help="각 점 N번 반복 = 실물 재생속도 늦춤(안전)")
     ap.add_argument("--slowmo", type=float, default=5.0, help="뷰어 보기속도만 늦춤(CSV 무관)")
     ap.add_argument("--maxstep", type=float, default=0.005, help="점 사이 최대 간격(m). 작을수록 더 촘촘/부드러움")
+    ap.add_argument("--clear", type=float, default=0.12, help="박스 위로 띄울 여유 높이(m). 팔 올릴 때 박스 안 걸리게")
     ap.add_argument("--leadin", type=int, default=100, help="차렷→시작점 보간 프레임 수")
     ap.add_argument("--leadout", type=int, default=100, help="끝점→차렷 복귀 보간 프레임 수")
     ap.add_argument("--no-return", action="store_true", help="차렷 복귀(리드아웃) 생략")
+    ap.add_argument("--grip-rpy", type=float, nargs=3, default=None, metavar=("R", "P", "Y"),
+                    help="악수(정면 보기) 손목 방향 rpy[rad]. 주면 집기 구간 손목을 이 방향으로 고정. 없으면 기존 방향 유지")
+    ap.add_argument("--palm-offset", type=float, default=0.04,
+                    help="손목→손바닥 중앙 거리[m]. --grip-rpy 줄 때만 적용. 손목을 정면 축으로 이만큼 뒤로 빼서 손바닥 중앙이 박스에 닿게")
+    ap.add_argument("--palm-axis", type=str, default="x", choices=["x", "y", "z", "-x", "-y", "-z"],
+                    help="손 로컬 '정면(손목→손바닥)' 축. --view로 확인 후 틀리면 부호/축 변경")
     ap.add_argument("--view", action="store_true")
     args = ap.parse_args()
 
@@ -156,6 +166,22 @@ def main():
     L = 1
     left_quat = data.mocap_quat[hands_mid[L]].copy()
     left_rpy = wxyz_to_rpy(left_quat)              # grasp(준비) 자세 손목 방향
+
+    # --- 악수(정면 보기) 방향 + 손목→손바닥 4cm 오프셋 (옵트인) ---
+    # --grip-rpy 를 주면 집기 구간 손목을 그 방향으로 고정하고,
+    # 손목을 '정면 축'으로 palm_offset 만큼 뒤로 빼서 손바닥 중앙이 박스에 닿게 함.
+    if args.grip_rpy is not None:
+        grip_rpy = np.array(args.grip_rpy, dtype=float)
+        _axmap = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1],
+                  "-x": [-1, 0, 0], "-y": [0, -1, 0], "-z": [0, 0, -1]}
+        _fwd_local = np.array(_axmap[args.palm_axis], dtype=float)
+        _fwd_world = R.from_euler('xyz', grip_rpy).apply(_fwd_local)   # 손 정면 방향(월드)
+        palm_off_vec = -args.palm_offset * _fwd_world                  # 손목을 정면 반대로 빼기
+        print(f"[악수모드] grip_rpy={np.round(grip_rpy,3)}, 손목→손바닥 {args.palm_offset*100:.0f}cm "
+              f"오프셋 방향(월드)={np.round(_fwd_world,2)}")
+    else:
+        grip_rpy = left_rpy
+        palm_off_vec = np.zeros(3)
 
     block_bid = model.body("block").id
     palm_sid = model.site("left_palm").id
@@ -190,6 +216,7 @@ def main():
 
     # ---------- 1) 정책 롤아웃 (헤드리스, traj 생성) ----------
     traj = [data.site_xpos[palm_sid].copy()]
+    traj_grasp = [0]                          # 시작점은 손 벌림
     wp_idx = 0; dwell = 0; grasped = False; final_dwell = 0
     for _ in range(MAX_STEPS):
         palm = data.site_xpos[palm_sid].copy()
@@ -209,6 +236,7 @@ def main():
 
         new_palm = data.site_xpos[palm_sid].copy()
         traj.append(new_palm.copy())
+        traj_grasp.append(1 if grasp_pred > 0.5 else 0)   # 정책의 grasp 결정 기록
 
         if grasp_pred > 0.5 and (grasped or np.linalg.norm(new_palm - data.xpos[block_bid]) < GRASP_GATE):
             grasped = True
@@ -230,34 +258,37 @@ def main():
                 if final_dwell >= DWELL_MIN:
                     break
 
-    # ---------- 2) 전체 프레임 구성: 리드인 + 메인 + 리드아웃 ----------
-    frames = []  # (pos, rpy)
+    # ---------- 2) 전체 프레임 구성: 차렷 → 수직상승 → pick&place → 복귀 ----------
+    start_rpy = start_rot.as_euler('xyz')
+    LIFTZ = TABLE_TOP_Z + args.size + args.clear          # 박스 위 안전 높이
+    up_home = np.array([start_pos[0], start_pos[1], LIFTZ])  # 차렷 위로 수직 상승한 지점
 
-    # 리드인: 차렷 → traj[0]  (위치 보간 + 손목 방향 slerp)
-    slerp_in = Slerp([0, 1], R.concatenate([start_rot, grasp_rot]))
-    for i in range(args.leadin):
-        a = (i + 1) / args.leadin
-        frames.append(((1 - a) * start_pos + a * traj[0], slerp_in(a).as_euler('xyz')))
+    # rest→approach 저공 스윙 제거: traj에서 approach(박스 위) 도달 지점부터 사용
+    approach0 = goals[0]
+    idx0 = 0
+    for i, p in enumerate(traj):
+        if np.linalg.norm(np.asarray(p) - approach0) < 0.06:
+            idx0 = i
+            break
+    main_traj = traj[idx0:]
+    main_grasp = traj_grasp[idx0:]
 
-    # 메인: pick & place (손목 방향 고정)
-    for p in traj:
-        frames.append((p, left_rpy))
+    frames = [(start_pos, start_rpy, 0),   # 차렷 (손 벌림, 오프셋 없음 — 실제 홈자세 보존)
+              (up_home, start_rpy, 0)]      # 박스 높이 위로 수직 상승
+    for p, g in zip(main_traj, main_grasp):  # 고공으로 이동 후 pick & place (악수 방향 + 손목 오프셋)
+        frames.append((np.asarray(p) + palm_off_vec, grip_rpy, g))
+    if not args.no_return:                 # 복귀: 끝점 → 차렷 위 고공 → 차렷 하강 (손 벌림)
+        frames.append((up_home + palm_off_vec, grip_rpy, 0))
+        frames.append((start_pos, start_rpy, 0))
 
-    # 리드아웃: traj[-1] → 차렷
-    if not args.no_return:
-        slerp_out = Slerp([0, 1], R.concatenate([grasp_rot, start_rot]))
-        for i in range(args.leadout):
-            a = (i + 1) / args.leadout
-            frames.append(((1 - a) * traj[-1] + a * start_pos, slerp_out(a).as_euler('xyz')))
-
-    # 전체를 일정 간격으로 촘촘하게 보간 (pick→place 구간 순간이동 방지)
+    # 일정 간격으로 촘촘하게 보간 (전 구간 부드럽게)
     frames = resample(frames, args.maxstep)
 
     # ---------- 3) (선택) 뷰어로 차렷부터 전체 미리보기 ----------
     if args.view:
         configuration.update(home.qpos.copy())   # 차렷에서 시작
         viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
-        for pos, rpy in frames:
+        for pos, rpy, _g in frames:
             if not viewer.is_running():
                 break
             data.mocap_pos[hands_mid[L]] = pos
@@ -272,23 +303,33 @@ def main():
     # ---------- 4) CSV 저장 ----------
     header = ['timestamp',
               'LH_x', 'LH_y', 'LH_z', 'LH_R', 'LH_P', 'LH_Y',
-              'RH_x', 'RH_y', 'RH_z', 'RH_R', 'RH_P', 'RH_Y']
+              'RH_x', 'RH_y', 'RH_z', 'RH_R', 'RH_P', 'RH_Y',
+              'grasp']
     dt = 1.0 / 200.0
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(header)
         t = 0.0
-        for pos, rpy in frames:
+        for pos, rpy, g in frames:
             for _ in range(max(1, args.repeat)):
                 w.writerow([t,
                             pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2],
-                            rh_pos[0], rh_pos[1], rh_pos[2], rh_rpy[0], rh_rpy[1], rh_rpy[2]])
+                            rh_pos[0], rh_pos[1], rh_pos[2], rh_rpy[0], rh_rpy[1], rh_rpy[2],
+                            int(g)])
                 t += dt
     n_rows = len(frames) * max(1, args.repeat)
     print(f"[V] 저장: {args.out}  ({n_rows} 프레임, 약 {n_rows/200:.1f}초 재생)")
-    print(f"    차렷 시작 {np.round(start_pos,3)}  →  pick&place  →  복귀 {np.round(start_pos,3) if not args.no_return else '(없음)'}")
-    print(f"    리드인 {args.leadin} + 메인 {len(traj)} + 리드아웃 {0 if args.no_return else args.leadout} 프레임")
+    print(f"    차렷 시작 {np.round(start_pos,3)} → 수직상승(z={LIFTZ:.2f}) → pick&place → {'차렷 복귀' if not args.no_return else '복귀 없음'}")
+    print(f"    박스 위 {LIFTZ:.2f}m 로 올린 뒤 이동 (rest 저공 {idx0}프레임 건너뜀)")
+    g_frames = sum(1 for _, _, g in frames if g)
+    g_transitions = sum(1 for a, b in zip(frames[:-1], frames[1:]) if a[2] != b[2])
+    print(f"    grasp 켜진 프레임 {g_frames}/{len(frames)} (열림→닫힘/닫힘→열림 전환 {g_transitions}회) → CSV 14번째 열")
 
+
+import os
+
+print("XML =", XML)
+print("exists =", os.path.exists(XML))
 
 if __name__ == "__main__":
     main()
