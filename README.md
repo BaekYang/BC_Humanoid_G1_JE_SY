@@ -142,6 +142,8 @@ python3 ik_traj.py $NET arm_traj.csv
 
 ## 7. 로봇 특이사항 & 실물 구동
 
+키는법, 정보 : 여기 유튜브 링크좀
+
 ### 로봇 정보
 - **Unitree G1-EDU** (몸통 29 모터: 다리 12 + 허리 3 + 양팔 14. Dex3-1 손 7DOF×2는 별도, 풀 43DOF).
 - 개발 컴퓨터(Jetson Orin NX) IP `192.168.123.164`, 로그인 `unitree` / `123`.
