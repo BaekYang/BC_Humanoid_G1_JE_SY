@@ -416,7 +416,7 @@ python3 -c "from unitree_sdk2py.core.channel import ChannelFactoryInitialize; pr
 
 ## 파일 구성
 
-| 구분 | 파일 | 역할 | 로봇 |
+| 구분 | 파일 | 역할 | 로봇사용 |
 |---|---|---|---|
 | 데이터 생성 | `g1_collect_demos.py` | 8-waypoint IK 전문가 궤적 + 랜덤화 | ❌ 시뮬 |
 | 학습 | `train_bc.py` | BC 지도학습, `bc_policy.pt`+`bc_stats.npz` 저장 | ❌ |
