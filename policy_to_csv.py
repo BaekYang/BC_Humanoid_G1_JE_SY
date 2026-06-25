@@ -29,7 +29,7 @@ from loop_rate_limiters import RateLimiter
 import logging
 logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 
-XML = r"/home/computer/mink/examples/unitree_g1/scene_g1_pickplace.xml"
+XML = "/home/computer/mink/examples/unitree_g1/scene_g1_pickplace.xml"
 BLOCK_QADR = 50
 LEFT_ARM_QADR = 22          # 왼팔 7관절 qpos 시작 (22~28): 차렷 = 전부 0
 RIGHT_ARM_QADR = 36         # 오른팔 7관절 qpos 시작 (36~42): 차렷 = 전부 0
@@ -128,7 +128,8 @@ def main():
     ap.add_argument("--tx", type=float, default=0.42)
     ap.add_argument("--ty", type=float, default=0.08)
     ap.add_argument("--size", type=float, default=0.025)
-    ap.add_argument("--out", type=str, default="arm_traj.csv")
+    ap.add_argument("--out", type=str, default=None,
+                    help="출력 CSV 이름. 안 주면 좌표로 자동: traj_bx_by_to_tx_ty.csv")
     ap.add_argument("--repeat", type=int, default=2, help="각 점 N번 반복 = 실물 재생속도 늦춤(안전)")
     ap.add_argument("--slowmo", type=float, default=5.0, help="뷰어 보기속도만 늦춤(CSV 무관)")
     ap.add_argument("--maxstep", type=float, default=0.005, help="점 사이 최대 간격(m). 작을수록 더 촘촘/부드러움")
@@ -144,6 +145,10 @@ def main():
                     help="손 로컬 '정면(손목→손바닥)' 축. --view로 확인 후 틀리면 부호/축 변경")
     ap.add_argument("--view", action="store_true")
     args = ap.parse_args()
+
+    # --out 안 주면 좌표로 자동 파일명: traj_b<bx>_<by>_to_t<tx>_<ty>.csv
+    if args.out is None:
+        args.out = f"traj_{args.bx*100.0:.0f}_{args.by*100.0:.0f}_to_{args.tx*100.0:.0f}_{args.ty*100.0:.0f}.csv"
 
     stats = dict(np.load("bc_stats.npz"))
     pol = Policy(hidden=int(stats["hidden"]))
