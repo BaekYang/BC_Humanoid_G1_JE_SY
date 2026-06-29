@@ -491,3 +491,115 @@ python3 ik_traj_grip.py $NET arm_traj.csv
 - 팔과 손 관절이 정확해도 다리, 몸통 등의 관절값이 달라지면(Null space problem과 유사) 손이 정확한 위치로 이동하기 힘듦.
 - 때문에 관절값을 정해줄 때 팔 이외의 다른 관절값도 **ik_traj_grip.py**에서 지정하게 수정.
 - **허리까지는 컨트롤이 가능하나 다리의 경우 로봇의 자체적 중심잡는 시스템 때문에 수정 시에 위험부담이 커 조정하지 않음.
+
+---
+ 
+# 4. 비전 게이트 — 시야 내 박스 유무 판정 (옵션)
+ 
+G1 내장 카메라(RGB)로 **"시야 안에 박스가 있을 때만"** 정책 롤아웃/CSV 생성을 실행하는 기능. OpenCV HSV 색 마스킹 기반이며, 칼리브레이션·3D 좌표·딥러닝(YOLO) 없이 **색 픽셀 수**만으로 유무를 판정한다.
+ 
+> **소명**: 요구사항은 "박스가 보일 때만 동작, 아니면 안 함" 수준이라 위치/거리(3D) 추정은 불필요하다. 색 마스크의 픽셀 수가 임계값을 넘는지만 보는 가장 가벼운 방식으로 구현해 의존성·지연을 최소화했다. 기존 파이프라인(상태 기반, 비전 없음)은 그대로 두고 **메인 추출 단계에만 `if` 게이트를 옵트인으로** 얹는다.
+ 
+### 추가되는 파일
+ 
+```
+PROJECT_DIR/
+├── box_detector.py            # [신규] 카메라(G1Camera) + VisionGate(유무 판정) + 풀 탐지(detect, 3D는 옵션)
+├── policy_to_csv_detect.py    # [신규] policy_to_csv.py + 비전 게이트 if문 (게이트는 옵트인)
+└── policy_to_csv.py           # 원본 유지 (게이트 없음)
+```
+ 
+> `box_detector.py`와 `policy_to_csv_detect.py`는 **같은 폴더**(`PROJECT_DIR`)에 둬야 한다. 게이트가 `from box_detector import VisionGate`로 가져오기 때문. (`dex3_gripper.py` import 규칙과 동일.)
+ 
+## 동작 원리
+ 
+### 게이트 판정 로직 (`VisionGate.object_visible()`)
+1. `G1Camera.get_frame()`으로 카메라 프레임(BGR) 1장 획득 (Unitree `VideoClient.GetImageSample()` → `cv2.imdecode`).
+2. `make_mask()`로 박스 색(HSV 범위)만 남긴 이진 마스크 생성 + 모폴로지 잡음 제거.
+3. 마스크의 흰 픽셀 수(`cv2.countNonZero`)를 셈.
+4. 픽셀 수 ≥ `MIN_PIXELS` 이면 **보임(True)**, 아니면 **안보임(False)**.
+5. 프레임을 못 받으면 안전하게 False 처리.
+### 메인 파일에 들어간 `if`문
+`policy_to_csv_detect.py`의 `main()` 맨 앞, 무거운 로드(정책·MuJoCo·IK) **이전**에 위치한다.
+ 
+```python
+if args.vision_gate:                       # --vision-gate 줬을 때만
+    from box_detector import VisionGate
+    gate = VisionGate(net=args.net, min_pixels=args.min_pixels)
+    if not gate.object_visible():
+        print("[비전] 시야에 박스 없음 → 종료.")
+        return                             # ← 박스 없으면 정책 로드·IK·CSV 전부 건너뜀
+    # 박스 보이면 아래 기존 코드 그대로 진행
+```
+ 
+> **소명(옵트인 설계)**: `--vision-gate`를 안 붙이면 비전 코드는 `import`조차 되지 않는다. 카메라가 없는 노트북(시뮬·학습 머신)에서도 원본 `policy_to_csv.py`와 100% 동일하게 동작 → `policy_to_csv_detect.py`는 사실상 원본의 상위호환이다. 무거운 로드 이전에 두는 이유는, 박스가 없으면 정책/MuJoCo 로드 자체를 낭비하지 않기 위함.
+ 
+> **소명(게이트 ≠ 시뮬 좌표)**: 게이트는 **실카메라**로 박스 유무만 본다. 정책 롤아웃은 여전히 **시뮬**에서 도는 구조라, 게이트는 "실행 트리거"로만 쓰인다(카메라 좌표를 시뮬 블록 위치로 넣지 않는다).
+ 
+## 실행 순서 (실로봇 카메라 연결 시)
+ 
+`$NET`에는 `ifconfig`로 확인한 로봇 연결 인터페이스를 넣는다. conda env `robot`.
+ 
+```bash
+conda activate robot
+cd ~/unitree_sdk2_python/example/my/IK/   # = PROJECT_DIR (box_detector.py, policy_to_csv_detect.py 위치)
+```
+ 
+**1) 카메라 동작 확인** — 영상이 뜨면 OK (안 뜨면 SDK/네트워크부터)
+```bash
+python3 box_detector.py $NET
+```
+ 
+**2) 박스 색 맞추기 (HSV 튜닝)** — 마스크에 박스만 하얗게 → `q` → 콘솔 `lo`/`hi`를 `COLOR_PRESETS`에 저장, `ACTIVE_COLOR`도 맞춤
+```bash
+python3 box_detector.py --tune $NET
+```
+ 
+**3) 게이트 임계값(`MIN_PIXELS`) 맞추기** — 박스 넣었다 뺐다 하며 픽셀 수 관찰 → "있을 때/없을 때" 사이값을 `MIN_PIXELS`에 (또는 `--min-pixels`로 전달)
+```bash
+python3 box_detector.py --gate $NET
+```
+ 
+**4) 메인 실행 — 게이트 검증**
+```bash
+# (a) 박스 치우고 → "박스 없음" 출력하며 즉시 종료해야 정상
+python3 policy_to_csv_detect.py --bx 0.41 --by 0.15 --tx 0.43 --ty 0.09 --repeat 1 --vision-gate --net $NET
+ 
+# (b) 박스 놓고 → 롤아웃 돌고 CSV 생성돼야 정상
+python3 policy_to_csv_detect.py --bx 0.41 --by 0.15 --tx 0.43 --ty 0.09 --repeat 1 --vision-gate --net $NET
+```
+> (a)와 (b)의 결과가 갈리면 `if` 게이트가 정상 작동하는 것 — 이게 기능 검증 포인트.
+ 
+## 파라미터 — `box_detector.py` 상단
+ 
+| 변수 | 값/예시 | 의미 |
+|---|---|---|
+| `ACTIVE_COLOR` | `"red"` | 현재 쓸 박스 색 (프리셋 키: red/blue/green/yellow) |
+| `COLOR_PRESETS` | HSV 범위 dict | `--tune`으로 찾은 값 저장. 빨강은 hue 경계라 범위 2개 |
+| `MIN_PIXELS` | `500` | 게이트 판정 임계값(색 픽셀 수). `--gate`로 측정해 설정 |
+| `MIN_AREA` | `300` | (풀 탐지용) 최소 덩어리 면적. 게이트와 무관 |
+| `FX,FY,CX,CY` / `REAL_BOX_WIDTH` | 추정값 | (풀 탐지용) 3D 추정. **이번 미션 미사용** |
+ 
+### `box_detector.py` 실행 모드
+ 
+| 명령 | 동작 |
+|---|---|
+| `python3 box_detector.py $NET` | 박스 탐지 루프 (bbox + 3D 표시) |
+| `python3 box_detector.py --tune $NET` | HSV 색 튜닝 |
+| `python3 box_detector.py --gate $NET` | `MIN_PIXELS` 진단 (픽셀 수 출력) |
+| `python3 box_detector.py --image front.jpg` | 저장된 사진으로 오프라인 테스트 (카메라 불필요) |
+ 
+### `policy_to_csv_detect.py` 추가 인자 (원본 인자에 더해)
+ 
+| 인자 | 기본값 | 의미 |
+|---|---|---|
+| `--vision-gate` | off | 게이트 켜기. 없으면 원본과 동일 |
+| `--net <iface>` | None | 게이트용 네트워크 인터페이스 (예: `$NET`) |
+| `--min-pixels <N>` | 500 | 게이트 판정 임계값 |
+ 
+## 한계 & 참고
+ 
+- **유무 판정만 한다.** 박스의 위치/거리는 계산하지 않는다(요구사항 아님). 좌표가 필요해지면 `box_detector.py`의 `detect()`(3D 추정 포함)와 `calibrate_camera.py`(체스보드 캘리브레이션)를 쓰면 된다.
+- 색 마스킹 기반이라 **조명 변화에 민감**하다. 조명이 바뀌면 `--tune`으로 HSV 재조정.
+- 한 번 보고 없으면 종료하는 가장 단순한 형태. **"박스 나타날 때까지 대기"**로 바꾸려면 `object_visible()`을 `while` 루프로 감싸면 된다.
+- 뷰어 관련 GL 문제 시 다른 실로봇 스크립트와 동일하게 `unset MUJOCO_GL` 적용.
