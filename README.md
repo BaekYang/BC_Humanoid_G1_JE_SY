@@ -2,7 +2,11 @@
 
 Unitree **G1-EDU** 휴머노이드가 **임의 위치의 박스를 집어 임의의 목표 지점에 놓도록** Behavioral Cloning(BC)으로 학습하고, MuJoCo 시뮬레이션에서 검증한 뒤 실로봇(왼팔 + Dex3 왼손)으로 배포하는 프로젝트다. 전신 IK는 [mink](https://github.com/kevinzakka/mink), 물리는 [MuJoCo](https://github.com/google-deepmind/mujoco), 비전 없음(상태 기반).
 
-# Video - https://youtu.be/w3wSNIc-Rjc?si=9RLIqycnpfSdSja4 - 켜는법
+## 시연영상
+(1) 시뮬레이션 : https://youtu.be/ON-xwR6WyMA
+(2) 리얼월드 :
+
+## Video - https://youtu.be/w3wSNIc-Rjc?si=9RLIqycnpfSdSja4 - 켜는법
 
 ## 파이프라인
 
